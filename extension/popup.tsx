@@ -84,28 +84,80 @@ function PriceTab() {
   }
 
   const refreshAll = async () => {
-    setMsg("Fetching prices from browser...")
     const list = [...products]
-    let updated = 0
+    if (list.length === 0) return
+    setMsg(`Opening ${list.length} product page(s) in tabs to extract prices...`)
 
+    let updated = 0
     for (const p of list) {
       try {
-        const price = await fetchPriceFromBrowser(p.product_url, p.platform)
-        if (price !== null) {
+        // Open product page in a background tab (real browser tab → Shopee can't block)
+        const tab = await chrome.tabs.create({ url: p.product_url, active: false })
+
+        // Wait for page to load (including JS)
+        await new Promise<void>((resolve) => {
+          const listener = (tabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+            if (tabId === tab.id && changeInfo.status === "complete") {
+              chrome.tabs.onUpdated.removeListener(listener)
+              resolve()
+            }
+          }
+          chrome.tabs.onUpdated.addListener(listener)
+          // Timeout after 15 seconds
+          setTimeout(() => {
+            chrome.tabs.onUpdated.removeListener(listener)
+            resolve()
+          }, 15000)
+        })
+
+        // Extract price from the loaded page DOM
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id! },
+          func: () => {
+            const url = window.location.href
+            // Amazon
+            if (url.includes("amazon")) {
+              const selectors = ['.a-price .a-offscreen', '#priceblock_ourprice', '#priceblock_dealprice', '#corePrice_desktop .a-price .a-offscreen']
+              for (const sel of selectors) {
+                const el = document.querySelector(sel)
+                if (el?.textContent) {
+                  const m = el.textContent.match(/[\d,.]+/)
+                  if (m) return { price: parseFloat(m[0].replace(/,/g, "")), name: (document.querySelector("#productTitle") as any)?.textContent?.trim() || "" }
+                }
+              }
+            }
+            // Shopee
+            if (url.includes("shopee")) {
+              const priceEl = document.querySelector('div.pqTWkA, div._3e_UQT')
+              if (priceEl?.textContent) {
+                const m = priceEl.textContent.match(/[\d,.]+/)
+                if (m) return { price: parseFloat(m[0].replace(/,/g, "")), name: document.querySelector("h1")?.textContent?.trim() || "" }
+              }
+            }
+            return null
+          }
+        })
+
+        // Close the tab
+        chrome.tabs.remove(tab.id!)
+
+        // Save price if found
+        const extracted = results?.[0]?.result
+        if (extracted?.price) {
           await fetch(`${API}/products/${p.id}/price`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-user-id": "default" },
-            body: JSON.stringify({ price, currency: "USD" })
+            body: JSON.stringify({ price: extracted.price, currency: "USD" })
           })
           updated++
-          setMsg(`Checking... ${updated}/${list.length} updated`)
+          setMsg(`Done: ${updated}/${list.length}`)
         }
-      } catch {}
-      // Small delay between fetches
-      await new Promise(r => setTimeout(r, 1500))
+      } catch (e: any) {
+        console.error("Check failed for", p.product_url, e.message)
+      }
     }
 
-    setMsg(`Done! ${updated} of ${list.length} products have prices.`)
+    setMsg(`Done! ${updated} of ${list.length} products updated.`)
     fetchList()
   }
 

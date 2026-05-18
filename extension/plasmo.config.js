@@ -5,7 +5,7 @@ module.exports = {
     name: 'SellerFast - Amazon Price Tracker & Seller Tools',
     version: '0.1.0',
     description: 'Monitor competitor prices, analyze reviews with AI, and translate listings. Built for Amazon & Shopee sellers.',
-    permissions: ['storage', 'alarms', 'notifications'],
+    permissions: ['storage', 'alarms', 'notifications', 'tabs', 'scripting'],
     browser_specific_settings: {
       gecko: {
         id: 'sellerfast@dotanero9.github.io',
