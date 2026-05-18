@@ -5,7 +5,7 @@ module.exports = {
     name: 'SellerFast - Amazon Price Tracker & Seller Tools',
     version: '0.1.0',
     description: 'Monitor competitor prices, analyze reviews with AI, and translate listings. Built for Amazon & Shopee sellers.',
-    permissions: ['storage', 'alarms', 'notifications'],
+    permissions: ['storage', 'alarms', 'notifications', 'scripting', 'activeTab'],
     browser_specific_settings: {
       gecko: {
         id: 'sellerfast@dotanero9.github.io',
@@ -23,7 +23,7 @@ module.exports = {
       'https://*.amazon.de/*',
       'https://*.shopee.com/*',
       'https://*.shopee.tw/*',
-      'http://10.3.0.15:3000/*',
+      'http://43.128.117.46:3000/*',
       'https://*.sellerfast.com/*',
     ],
     action: {

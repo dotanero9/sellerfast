@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 
-const API_BASE = "http://10.3.0.15:3000/api"
+const API_BASE = "http://43.128.117.46:3000/api"
 const PRO_CHECKOUT = "https://sellerfast.lemonsqueezy.com/checkout"
 
 type Tab = "price" | "review" | "translate"
@@ -57,7 +57,7 @@ function App() {
 function PriceTab() {
   const [products, setProducts] = useState([])
   const [url, setUrl] = useState("")
-  const [platform, setPlatform] = useState("amazon")
+  const [platform, setPlatform] = useState("auto")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
@@ -70,15 +70,93 @@ function PriceTab() {
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
+  // Try to extract product info from the active tab
+  const extractFromActiveTab = async (): Promise<{ name: string; price: number | null; platform: string; productId: string } | null> => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab?.id || !tab.url) return null
+
+      const tabUrl = tab.url
+      const isAmazon = tabUrl.includes("amazon.")
+      const isShopee = tabUrl.includes("shopee.")
+
+      if (!isAmazon && !isShopee) return null
+
+      // Extract product ID from URL
+      let productId = tabUrl
+      if (isAmazon) {
+        const m = tabUrl.match(/\/dp\/([A-Z0-9]+)/)
+        if (m) productId = m[1]
+      }
+
+      // Try to run extraction in the page
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const url = window.location.href
+          let price: number | null = null
+          let name = ""
+
+          if (url.includes("amazon")) {
+            const selectors = ['.a-price .a-offscreen', '#priceblock_ourprice', '#corePrice_desktop .a-price .a-offscreen']
+            for (const sel of selectors) {
+              const el = document.querySelector(sel)
+              if (el?.textContent) {
+                const m = el.textContent.match(/[\d,.]+/)
+                if (m) { price = parseFloat(m[0].replace(/,/g, "")); break }
+              }
+            }
+            name = (document.querySelector("#productTitle") as HTMLElement)?.textContent?.trim() || ""
+          }
+
+          if (url.includes("shopee")) {
+            const priceEl = document.querySelector('div.pqTWkA, div._3e_UQT')
+            if (priceEl?.textContent) {
+              const m = priceEl.textContent.match(/[\d,.]+/)
+              if (m) price = parseFloat(m[0].replace(/,/g, ""))
+            }
+            name = document.querySelector("h1")?.textContent?.trim() || ""
+          }
+
+          return { name, price }
+        }
+      })
+
+      if (results?.[0]?.result) {
+        const { name, price } = results[0].result
+        return {
+          name: name || tabUrl,
+          price,
+          platform: isAmazon ? "amazon" : "shopee",
+          productId
+        }
+      }
+    } catch (e) {
+      // Silently fail, will use defaults
+    }
+    return null
+  }
+
   const addProduct = async () => {
     if (!url.trim()) return
     setLoading(true)
     setError("")
+
     try {
+      // Try to extract product info from active tab
+      const extracted = await extractFromActiveTab()
+      const p = extracted?.platform || platform === "auto" ? (url.includes("amazon") ? "amazon" : url.includes("shopee") ? "shopee" : "amazon") : platform
+
       const res = await fetch(`${API_BASE}/products`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-user-id": "default" },
-        body: JSON.stringify({ platform, productUrl: url.trim(), productId: url.trim() })
+        body: JSON.stringify({
+          platform: p,
+          productUrl: url.trim(),
+          productId: extracted?.productId || url.trim(),
+          productName: extracted?.name || "Checking...",
+          initialPrice: extracted?.price,
+        })
       })
       if (res.status === 409) setError("Already monitoring")
       else if (!res.ok) setError((await res.json()).error || "Failed")
