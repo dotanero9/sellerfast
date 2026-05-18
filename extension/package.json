@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "plasmo dev",
     "build": "plasmo build",
+    "build:firefox": "plasmo build --target=firefox-mv2 && python3 ../scripts/patch-firefox-manifest.py && cd build/firefox-mv2-prod && zip -r ../../../sellerfast-firefox-latest.zip .",
     "package": "plasmo package"
   },
   "dependencies": {
