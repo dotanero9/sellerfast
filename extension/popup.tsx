@@ -83,16 +83,30 @@ function PriceTab() {
     fetchList()
   }
 
-  const refreshAll = () => {
-    setMsg("Background worker checking prices...")
-    chrome.runtime.sendMessage({ action: "checkNow" }, (resp) => {
-      if (chrome.runtime.lastError) {
-        setMsg("Worker not ready. Prices update automatically every 60min.")
-      } else {
-        setMsg("Price check started. Refresh list in a moment.")
-      }
-      setTimeout(fetchList, 8000)
-    })
+  const refreshAll = async () => {
+    setMsg("Fetching prices from browser...")
+    const list = [...products]
+    let updated = 0
+
+    for (const p of list) {
+      try {
+        const price = await fetchPriceFromBrowser(p.product_url, p.platform)
+        if (price !== null) {
+          await fetch(`${API}/products/${p.id}/price`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-user-id": "default" },
+            body: JSON.stringify({ price, currency: "USD" })
+          })
+          updated++
+          setMsg(`Checking... ${updated}/${list.length} updated`)
+        }
+      } catch {}
+      // Small delay between fetches
+      await new Promise(r => setTimeout(r, 1500))
+    }
+
+    setMsg(`Done! ${updated} of ${list.length} products have prices.`)
+    fetchList()
   }
 
   const pricedCount = products.filter((p: any) => p.current_price).length
@@ -224,6 +238,54 @@ function TranslateTab() {
       {result && <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", borderRadius: 6, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", border: "1px solid #e2e8f0", maxHeight: 300, overflowY: "auto" }}>{result}</div>}
     </div>
   )
+}
+
+// ══════ Browser-side price fetcher ══════
+// Runs from the extension popup context, which has the user's real cookies and IP.
+// This is fundamentally different from server-side scraping.
+
+async function fetchPriceFromBrowser(url: string, platform: string): Promise<number | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": navigator.userAgent,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US;q=0.9",
+      },
+      signal: AbortSignal.timeout(12000)
+    })
+    if (!res.ok) return null
+
+    const html = await res.text()
+
+    if (platform === "amazon" || url.includes("amazon")) {
+      const patterns = [
+        /<span[^>]*class="a-offscreen"[^>]*>\$?([\d,.]+)/i,
+        /data-asin-price="([\d,.]+)"/i,
+        /"priceblock_ourprice"[^>]*>\$?([\d,.]+)/i,
+        /"priceblock_dealprice"[^>]*>\$?([\d,.]+)/i,
+        /<span[^>]*class="a-price-whole"[^>]*>([\d,.]+)/i,
+      ]
+      for (const re of patterns) {
+        const m = html.match(re)
+        if (m) return parseFloat(m[1].replace(/,/g, ""))
+      }
+    }
+
+    if (platform === "shopee" || url.includes("shopee")) {
+      // Shopee embeds price data in <script> tags as JSON
+      const m = html.match(/"price"\s*:\s*(\d+)/)
+      if (m) return parseInt(m[1]) / 100000
+      const m2 = html.match(/"price_before_discount"\s*:\s*(\d+)/)
+      if (m2) return parseInt(m2[1]) / 100000
+      const m3 = html.match(/"price_min"\s*:\s*(\d+)/)
+      if (m3) return parseInt(m3[1]) / 100000
+    }
+
+    return null
+  } catch {
+    return null
+  }
 }
 
 export default App
