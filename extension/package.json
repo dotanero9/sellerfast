@@ -1,0 +1,17 @@
+{
+  "name": "sellerfast-extension",
+  "displayName": "SellerFast",
+  "version": "0.1.0",
+  "description": "Cross-border seller daily ops toolkit - price tracker, review analyzer, listing translator",
+  "scripts": {
+    "dev": "plasmo dev",
+    "build": "plasmo build",
+    "package": "plasmo package"
+  },
+  "dependencies": {
+    "@plasmohq/storage": "^1.15.0",
+    "plasmo": "^0.90.5",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  }
+}
