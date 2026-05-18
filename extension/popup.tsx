@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 
 const API_BASE = "http://43.128.117.46:3000/api"
-const PRO_CHECKOUT = "https://sellerfast.lemonsqueezy.com/checkout"
 
 type Tab = "price" | "review" | "translate"
 
@@ -10,13 +9,11 @@ function App() {
 
   return (
     <div style={{ width: 400, fontFamily: "system-ui, sans-serif" }}>
-      {/* Header */}
       <div style={{ padding: "14px 16px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, fontWeight: 700 }}>📊 SellerFast</h1>
-        <span style={{ fontSize: 10, color: "#94a3b8" }}>v0.1</span>
+        <span style={{ fontSize: 10, color: "#94a3b8" }}>v0.2</span>
       </div>
 
-      {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "2px solid #e2e8f0", margin: "12px 16px 0" }}>
         {([
           ["price", "💰 价格"],
@@ -27,16 +24,12 @@ function App() {
             key={key}
             onClick={() => setTab(key)}
             style={{
-              flex: 1,
-              padding: "8px 0",
-              fontSize: 13,
+              flex: 1, padding: "8px 0", fontSize: 13,
               fontWeight: tab === key ? 600 : 400,
               color: tab === key ? "#2563eb" : "#64748b",
-              background: "none",
-              border: "none",
+              background: "none", border: "none",
               borderBottom: tab === key ? "2px solid #2563eb" : "2px solid transparent",
-              marginBottom: -2,
-              cursor: "pointer",
+              marginBottom: -2, cursor: "pointer",
             }}>
             {label}
           </button>
@@ -57,9 +50,8 @@ function App() {
 function PriceTab() {
   const [products, setProducts] = useState([])
   const [url, setUrl] = useState("")
-  const [platform, setPlatform] = useState("auto")
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState("")
+  const [status, setStatus] = useState("")
 
   const fetchProducts = useCallback(async () => {
     try {
@@ -70,99 +62,41 @@ function PriceTab() {
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
-  // Try to extract product info from the active tab
-  const extractFromActiveTab = async (): Promise<{ name: string; price: number | null; platform: string; productId: string } | null> => {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      if (!tab?.id || !tab.url) return null
-
-      const tabUrl = tab.url
-      const isAmazon = tabUrl.includes("amazon.")
-      const isShopee = tabUrl.includes("shopee.")
-
-      if (!isAmazon && !isShopee) return null
-
-      // Extract product ID from URL
-      let productId = tabUrl
-      if (isAmazon) {
-        const m = tabUrl.match(/\/dp\/([A-Z0-9]+)/)
-        if (m) productId = m[1]
-      }
-
-      // Try to run extraction in the page
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          const url = window.location.href
-          let price: number | null = null
-          let name = ""
-
-          if (url.includes("amazon")) {
-            const selectors = ['.a-price .a-offscreen', '#priceblock_ourprice', '#corePrice_desktop .a-price .a-offscreen']
-            for (const sel of selectors) {
-              const el = document.querySelector(sel)
-              if (el?.textContent) {
-                const m = el.textContent.match(/[\d,.]+/)
-                if (m) { price = parseFloat(m[0].replace(/,/g, "")); break }
-              }
-            }
-            name = (document.querySelector("#productTitle") as HTMLElement)?.textContent?.trim() || ""
-          }
-
-          if (url.includes("shopee")) {
-            const priceEl = document.querySelector('div.pqTWkA, div._3e_UQT')
-            if (priceEl?.textContent) {
-              const m = priceEl.textContent.match(/[\d,.]+/)
-              if (m) price = parseFloat(m[0].replace(/,/g, ""))
-            }
-            name = document.querySelector("h1")?.textContent?.trim() || ""
-          }
-
-          return { name, price }
-        }
-      })
-
-      if (results?.[0]?.result) {
-        const { name, price } = results[0].result
-        return {
-          name: name || tabUrl,
-          price,
-          platform: isAmazon ? "amazon" : "shopee",
-          productId
-        }
-      }
-    } catch (e) {
-      // Silently fail, will use defaults
-    }
-    return null
+  // Auto-detect platform from URL
+  const detectPlatform = (u: string) => {
+    if (u.includes("shopee")) return "shopee"
+    return "amazon"
   }
 
   const addProduct = async () => {
     if (!url.trim()) return
     setLoading(true)
-    setError("")
+    setStatus("")
 
+    const platform = detectPlatform(url)
     try {
-      // Try to extract product info from active tab
-      const extracted = await extractFromActiveTab()
-      const p = extracted?.platform || platform === "auto" ? (url.includes("amazon") ? "amazon" : url.includes("shopee") ? "shopee" : "amazon") : platform
-
-      const res = await fetch(`${API_BASE}/products`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": "default" },
-        body: JSON.stringify({
-          platform: p,
-          productUrl: url.trim(),
-          productId: extracted?.productId || url.trim(),
-          productName: extracted?.name || "Checking...",
-          initialPrice: extracted?.price,
-        })
+      // Send message to background — it will add AND immediately start checking price
+      chrome.runtime.sendMessage({
+        action: "addProduct",
+        platform,
+        productUrl: url.trim(),
+        productId: url.trim(),
+      }, (response) => {
+        if (response?.error) {
+          setStatus("Error: " + response.error)
+        } else {
+          setStatus("Added! Background checking price...")
+          setUrl("")
+          fetchProducts()
+          // Refresh again after a few seconds to see price
+          setTimeout(fetchProducts, 5000)
+        }
+        setLoading(false)
       })
-      if (res.status === 409) setError("Already monitoring")
-      else if (!res.ok) setError((await res.json()).error || "Failed")
-      else { setUrl(""); fetchProducts() }
-    } catch { setError("Backend not running on localhost:3000") }
-    finally { setLoading(false) }
+    } catch (e: any) {
+      setStatus("Error: cannot connect to background service")
+      setLoading(false)
+    }
   }
 
   const removeProduct = async (id: number) => {
@@ -170,39 +104,63 @@ function PriceTab() {
     fetchProducts()
   }
 
+  const getDisplayName = (p: any) => {
+    if (p.platform === "amazon" && p.product_id?.match(/^[A-Z0-9]{10}$/)) {
+      return `ASIN: ${p.product_id}`
+    }
+    return p.product_name || p.product_id?.substring(0, 50) || "Product"
+  }
+
+  const getPriceColor = (p: any) => {
+    if (!p.current_price) return "#94a3b8"
+    return "#16a34a"
+  }
+
+  // Count how many have prices
+  const pricedCount = products.filter((p: any) => p.current_price).length
+
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        <select value={platform} onChange={e => setPlatform(e.target.value)}
-          style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12 }}>
-          <option value="amazon">Amazon</option>
-          <option value="shopee">Shopee</option>
-        </select>
-        <input type="text" value={url} onChange={e => setUrl(e.target.value)}
+        <input
+          type="text"
+          value={url}
+          onChange={e => setUrl(e.target.value)}
           onKeyDown={e => e.key === "Enter" && addProduct()}
-          placeholder="Paste product URL..."
-          style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12 }} />
+          placeholder="Paste Amazon/Shopee product URL..."
+          style={{ flex: 1, padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12 }} />
         <button onClick={addProduct} disabled={loading}
-          style={{ padding: "6px 14px", background: loading ? "#999" : "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>
+          style={{ padding: "8px 16px", background: loading ? "#999" : "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>
           {loading ? "..." : "+ Add"}
         </button>
       </div>
 
-      {error && <div style={{ background: "#fef2f2", color: "#dc2626", padding: "8px 12px", borderRadius: 6, marginBottom: 12, fontSize: 12 }}>{error}</div>}
+      {status && <div style={{ background: status.includes("Error") ? "#fef2f2" : "#f0fdf4", color: status.includes("Error") ? "#dc2626" : "#16a34a", padding: "8px 12px", borderRadius: 6, marginBottom: 12, fontSize: 12 }}>{status}</div>}
+
+      <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>
+        {products.length} products · {pricedCount} with prices · Auto-check every 60 min
+      </div>
 
       {products.length === 0 ? (
-        <div style={{ textAlign: "center", color: "#999", padding: 32, fontSize: 13 }}>No products yet. Add one above.</div>
+        <div style={{ textAlign: "center", color: "#999", padding: 40, fontSize: 13 }}>
+          <p>Paste a competitor's product URL above</p>
+          <p style={{ fontSize: 11, marginTop: 8 }}>Prices will be checked automatically in the background</p>
+        </div>
       ) : (
         products.map((p: any) => (
-          <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderBottom: "1px solid #eee", gap: 8 }}>
+          <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid #eee", gap: 8 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.product_name || p.product_id}</div>
-              <div style={{ fontSize: 10, color: "#888" }}>{p.platform.toUpperCase()} · {p.updated_at?.slice(0, 10) || "pending"}</div>
+              <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {getDisplayName(p)}
+              </div>
+              <div style={{ fontSize: 10, color: "#888" }}>
+                {p.platform?.toUpperCase()} · {p.current_price ? new Date(p.updated_at).toLocaleDateString() : "waiting for first check"}
+              </div>
             </div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: p.current_price ? "#16a34a" : "#999", whiteSpace: "nowrap" }}>
-              {p.current_price ? `$${Number(p.current_price).toFixed(2)}` : "—"}
+            <div style={{ fontSize: 15, fontWeight: 700, color: getPriceColor(p), whiteSpace: "nowrap", minWidth: 60, textAlign: "right" }}>
+              {p.current_price ? `$${Number(p.current_price).toFixed(2)}` : "…"}
             </div>
-            <button onClick={() => removeProduct(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", fontSize: 14 }}>✕</button>
+            <button onClick={() => removeProduct(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", fontSize: 14, padding: 4 }}>✕</button>
           </div>
         ))
       )}
@@ -221,51 +179,30 @@ function ReviewTab() {
 
   const analyze = async () => {
     if (!asin.trim() || !reviews.trim()) return
-    setLoading(true)
-    setError("")
-    setResult("")
+    setLoading(true); setError(""); setResult("")
     try {
       const parsed = reviews.split("\n").filter(Boolean).map(line => {
         const parts = line.split("|")
         return { rating: parseInt(parts[0]) || 0, title: parts[1]?.trim() || "", body: parts[2]?.trim() || "" }
       })
       const res = await fetch(`${API_BASE}/ai/analyze-reviews`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ productName: asin, reviews: parsed })
       })
       const data = await res.json()
-      if (data.error) setError(data.error)
-      else setResult(data.analysis)
+      data.error ? setError(data.error) : setResult(data.analysis)
     } catch { setError("Cannot connect to backend") }
     finally { setLoading(false) }
   }
 
   return (
     <div>
-      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>粘贴评价数据，AI 自动提取差评关键词和产品改进建议</p>
-
-      <input type="text" value={asin} onChange={e => setAsin(e.target.value)}
-        placeholder="Product name or ASIN"
-        style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
-
-      <textarea value={reviews} onChange={e => setReviews(e.target.value)}
-        placeholder="Paste reviews, one per line:&#10;1 | Great product | Love the color and quality&#10;2 | Too small | Had to return it"
-        rows={6}
-        style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12, resize: "vertical", fontFamily: "monospace", boxSizing: "border-box" }} />
-
-      <button onClick={analyze} disabled={loading || !asin || !reviews}
-        style={{ width: "100%", marginTop: 8, padding: "10px", background: loading ? "#999" : "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
-        {loading ? "Analyzing..." : "🔍 Analyze Reviews"}
-      </button>
-
+      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>Paste negative reviews, AI extracts key issues and suggests fixes</p>
+      <input type="text" value={asin} onChange={e => setAsin(e.target.value)} placeholder="Product ASIN or name" style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+      <textarea value={reviews} onChange={e => setReviews(e.target.value)} placeholder="Paste reviews, one per line:&#10;1 | Too small | Had to return&#10;2 | Color faded | Not as pictured" rows={6} style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 12, resize: "vertical", fontFamily: "monospace", boxSizing: "border-box" }} />
+      <button onClick={analyze} disabled={loading || !asin || !reviews} style={{ width: "100%", marginTop: 8, padding: "10px", background: loading ? "#999" : "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{loading ? "Analyzing..." : "Analyze Reviews"}</button>
       {error && <div style={{ marginTop: 10, padding: 10, background: "#fef2f2", borderRadius: 6, fontSize: 12, color: "#dc2626" }}>{error}</div>}
-
-      {result && (
-        <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", borderRadius: 6, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", border: "1px solid #e2e8f0", maxHeight: 300, overflowY: "auto" }}>
-          {result}
-        </div>
-      )}
+      {result && <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", borderRadius: 6, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", border: "1px solid #e2e8f0", maxHeight: 300, overflowY: "auto" }}>{result}</div>}
     </div>
   )
 }
@@ -281,61 +218,30 @@ function TranslateTab() {
 
   const translate = async () => {
     if (!text.trim()) return
-    setLoading(true)
-    setError("")
-    setResult("")
+    setLoading(true); setError(""); setResult("")
     try {
-      const res = await fetch(`${API_BASE}/ai/translate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, languages })
-      })
+      const res = await fetch(`${API_BASE}/ai/translate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, languages }) })
       const data = await res.json()
-      if (data.error) setError(data.error)
-      else setResult(data.translation)
+      data.error ? setError(data.error) : setResult(data.translation)
     } catch { setError("Cannot connect to backend") }
     finally { setLoading(false) }
   }
 
-  const toggleLang = (lang: string) => {
-    setLanguages(prev => prev.includes(lang) ? prev.filter(l => l !== lang) : [...prev, lang])
-  }
-
+  const toggleLang = (lang: string) => setLanguages(prev => prev.includes(lang) ? prev.filter(l => l !== lang) : [...prev, lang])
   const langLabels: Record<string, string> = { en: "英语", ja: "日语", de: "德语", fr: "法语", es: "西班牙语" }
 
   return (
     <div>
-      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>中文 Listing 一键翻译为多语种，保留营销语气</p>
-
-      <textarea value={text} onChange={e => setText(e.target.value)}
-        placeholder="输入中文 Listing 文案，例如：&#10;2025新款男士透气跑步鞋&#10;轻量减震运动鞋 网面透气"
-        rows={4}
-        style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 13, resize: "vertical", boxSizing: "border-box" }} />
-
+      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>Chinese listing → multi-language, e-commerce optimized</p>
+      <textarea value={text} onChange={e => setText(e.target.value)} placeholder="输入中文 Listing..." rows={4} style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", fontSize: 13, resize: "vertical", boxSizing: "border-box" }} />
       <div style={{ display: "flex", gap: 6, margin: "10px 0", flexWrap: "wrap" }}>
         {Object.entries(langLabels).map(([key, label]) => (
-          <button key={key} onClick={() => toggleLang(key)}
-            style={{
-              padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 500, cursor: "pointer",
-              background: languages.includes(key) ? "#2563eb" : "#f1f5f9",
-              color: languages.includes(key) ? "#fff" : "#64748b",
-              border: languages.includes(key) ? "1px solid #2563eb" : "1px solid #e2e8f0"
-            }}>{label}</button>
+          <button key={key} onClick={() => toggleLang(key)} style={{ padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 500, cursor: "pointer", background: languages.includes(key) ? "#2563eb" : "#f1f5f9", color: languages.includes(key) ? "#fff" : "#64748b", border: languages.includes(key) ? "1px solid #2563eb" : "1px solid #e2e8f0" }}>{label}</button>
         ))}
       </div>
-
-      <button onClick={translate} disabled={loading || !text.trim() || languages.length === 0}
-        style={{ width: "100%", padding: "10px", background: loading ? "#999" : "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
-        {loading ? "Translating..." : "🌐 Translate"}
-      </button>
-
+      <button onClick={translate} disabled={loading || !text.trim() || languages.length === 0} style={{ width: "100%", padding: "10px", background: loading ? "#999" : "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>{loading ? "Translating..." : "Translate"}</button>
       {error && <div style={{ marginTop: 10, padding: 10, background: "#fef2f2", borderRadius: 6, fontSize: 12, color: "#dc2626" }}>{error}</div>}
-
-      {result && (
-        <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", borderRadius: 6, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", border: "1px solid #e2e8f0", maxHeight: 300, overflowY: "auto" }}>
-          {result}
-        </div>
-      )}
+      {result && <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", borderRadius: 6, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", border: "1px solid #e2e8f0", maxHeight: 300, overflowY: "auto" }}>{result}</div>}
     </div>
   )
 }
