@@ -10,8 +10,10 @@ export const config: PlasmoCSConfig = {
     "https://www.amazon.co.uk/dp/*",
     "https://www.amazon.de/*/dp/*",
     "https://www.amazon.de/dp/*",
-    "https://shopee.com/*-i.*",
-    "https://shopee.tw/*-i.*"
+    "https://shopee.com/*",
+    "https://shopee.tw/*",
+    "https://shopee.sg/*",
+    "https://shopee.co.id/*"
   ]
 }
 

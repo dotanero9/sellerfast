@@ -1,90 +1,66 @@
 const API_BASE = "http://43.128.117.46:3000/api"
 
-// ── Message handler ──
+// ── Messages ──
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "addProduct") {
-    handleAddProduct(message, sendResponse)
+    addProductViaAPI(message).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }))
     return true
   }
   if (message.action === "priceExtracted") {
-    handlePriceExtracted(message)
+    savePrice(message).catch(() => {})
+  }
+  if (message.action === "checkNow") {
+    runPriceCheck().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }))
+    return true
   }
 })
 
-async function handleAddProduct(msg: any, sendResponse: (r: any) => void) {
-  try {
-    const res = await fetch(`${API_BASE}/products`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-user-id": "default" },
-      body: JSON.stringify({
-        platform: msg.platform,
-        productId: msg.productId,
-        productUrl: msg.productUrl,
-        productName: msg.productName || msg.productUrl,
-      })
+async function addProductViaAPI(msg: any) {
+  const res = await fetch(`${API_BASE}/products`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-user-id": "default" },
+    body: JSON.stringify({
+      platform: msg.platform,
+      productId: msg.productId,
+      productUrl: msg.productUrl,
+      productName: msg.productName || msg.productUrl,
+      initialPrice: msg.currentPrice || null,
     })
-    const data = await res.json()
-    if (res.ok) {
-      // Immediately trigger a price check for this product
-      checkSingleProduct(data.id, msg.productUrl, msg.platform)
-      sendResponse({ success: true, id: data.id })
-    } else {
-      sendResponse({ error: data.error || "Failed to add" })
-    }
-  } catch (err: any) {
-    sendResponse({ error: err.message })
-  }
+  })
+  const data = await res.json()
+  if (!res.ok) return { error: data.error || "Failed" }
+  return { success: true, id: data.id }
 }
 
-function handlePriceExtracted(msg: any) {
-  // Content script found a price on a product page, save it
-  fetch(`${API_BASE}/products/${msg.productId}/price`, {
+async function savePrice(msg: any) {
+  await fetch(`${API_BASE}/products/${msg.productId}/price`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-user-id": "default" },
     body: JSON.stringify({ price: msg.price, currency: msg.currency || "USD" })
-  }).catch(() => {})
+  })
 }
 
-// ── Periodic price check ──
+// ── Periodic check ──
 
 chrome.alarms.create("checkPrices", { periodInMinutes: 60 })
 
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "checkPrices") {
-    await checkAllProducts()
-  }
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "checkPrices") runPriceCheck()
 })
 
-// Also run a check on startup
-checkAllProducts()
-
-async function checkSingleProduct(productId: number, url: string, platform: string) {
+async function runPriceCheck() {
   try {
-    const price = await fetchAndExtractPrice(url, platform)
-    if (price !== null) {
-      await fetch(`${API_BASE}/products/${productId}/price`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": "default" },
-        body: JSON.stringify({ price, currency: "USD" })
-      })
-    }
-  } catch (e: any) {
-    console.error(`[SellerFast] Check failed for #${productId}:`, e.message)
-  }
-}
-
-async function checkAllProducts() {
-  try {
-    const listRes = await fetch(`${API_BASE}/products`, { headers: { "x-user-id": "default" } })
-    if (!listRes.ok) return
-    const products = await listRes.json()
+    const res = await fetch(`${API_BASE}/products`, { headers: { "x-user-id": "default" } })
+    if (!res.ok) return
+    const products = await res.json()
+    if (!products?.length) return
 
     let updated = 0
     for (const p of products) {
       try {
-        const price = await fetchAndExtractPrice(p.product_url, p.platform)
-        if (price !== null && price !== p.current_price) {
+        const price = await fetchPrice(p.product_url, p.platform)
+        if (price !== null) {
           await fetch(`${API_BASE}/products/${p.id}/price`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-user-id": "default" },
@@ -92,94 +68,83 @@ async function checkAllProducts() {
           })
           updated++
         }
-        // 2-5s delay between requests to avoid rate limiting
-        await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000))
-      } catch (e: any) {
-        console.error(`[SellerFast] Failed ${p.product_id}:`, e.message)
-      }
+      } catch (e) { /* skip failed product */ }
+      // Delay between requests
+      await new Promise(r => setTimeout(r, 3000))
     }
 
     if (updated > 0) {
       chrome.notifications?.create({
-        type: "basic",
-        iconUrl: "assets/icon128.png",
-        title: "SellerFast",
-        message: `${updated} product price(s) changed.`
+        type: "basic", iconUrl: "assets/icon128.png",
+        title: "SellerFast", message: `${updated} price(s) updated.`
       })
     }
-  } catch (err: any) {
-    console.error("[SellerFast] Check failed:", err.message)
-  }
+  } catch (e) { /* silent */ }
 }
 
-// ── Price scraping (from extension context → uses browser's fingerprint) ──
+// ── Fetch price (from browser context — real cookies, real IP) ──
 
-async function fetchAndExtractPrice(url: string, platform: string): Promise<number | null> {
+async function fetchPrice(url: string, platform: string): Promise<number | null> {
   try {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 12000)
+
     const res = await fetch(url, {
       headers: {
         "User-Agent": navigator.userAgent,
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html",
+        "Accept-Language": "en-US;q=0.9",
       },
-      signal: AbortSignal.timeout(15000)
+      signal: controller.signal,
     })
     if (!res.ok) return null
 
-    const html = await res.text()
-    return extractPriceFromHTML(html, url, platform)
+    // Only read first 500KB to avoid memory issues
+    const reader = res.body?.getReader()
+    if (!reader) return null
+
+    let html = ""
+    const decoder = new TextDecoder()
+    while (html.length < 500000) {
+      const { done, value } = await reader.read()
+      if (done) break
+      html += decoder.decode(value, { stream: true })
+    }
+    reader.cancel() // stop reading
+
+    return extractPrice(html, url, platform)
   } catch {
     return null
   }
 }
 
-function extractPriceFromHTML(html: string, url: string, platform: string): number | null {
+function extractPrice(html: string, url: string, platform: string): number | null {
   const isAmazon = url.includes("amazon") || platform === "amazon"
-  const isShopee = url.includes("shopee") || platform === "shopee"
 
   if (isAmazon) {
-    // Amazon price patterns — try multiple
+    // Amazon price regex patterns
     const patterns = [
-      /<span[^>]*class="a-price"[^>]*>[\s\S]*?<span[^>]*class="a-offscreen"[^>]*>\$?([\d,.]+)/i,
-      /"a-price-whole"[^>]*>\s*([\d,.]+)/i,
-      /<span[^>]*class="a-price-whole"[^>]*>\s*([\d,.]+)/i,
+      /<span[^>]*class="a-offscreen"[^>]*>\$?([\d,.]+)/i,
       /data-asin-price="([\d,.]+)"/i,
-      /"priceblock_ourprice"[^>]*>\s*\$?([\d,.]+)/i,
-      /"priceblock_dealprice"[^>]*>\s*\$?([\d,.]+)/i,
-      /"priceblock_saleprice"[^>]*>\s*\$?([\d,.]+)/i,
-      /<span[^>]*id="price_inside_buybox"[^>]*>\s*\$?([\d,.]+)/i,
+      /"priceblock_ourprice"[^>]*>\$?([\d,.]+)/i,
+      /"priceblock_dealprice"[^>]*>\$?([\d,.]+)/i,
+      /<span[^>]*class="a-price-whole"[^>]*>([\d,.]+)/i,
     ]
     for (const re of patterns) {
-      const match = html.match(re)
-      if (match) return parseFloat(match[1].replace(/,/g, ""))
-    }
-
-    // Fallback: search for any price-like pattern near "price" keyword
-    const priceSection = html.match(/class="a-price[\s\S]{0,2000}?<\/span>/i)
-    if (priceSection) {
-      const m = priceSection[0].match(/\$?([\d,]+\.\d{2})/)
+      const m = html.match(re)
       if (m) return parseFloat(m[1].replace(/,/g, ""))
     }
   }
 
-  if (isShopee) {
-    // Shopee embeds price in JSON/JS
-    const patterns = [
-      /"price"\s*:\s*(\d+)/,
-      /"price_before_discount"\s*:\s*(\d+)/,
-      /"price_min"\s*:\s*(\d+)/,
-    ]
-    for (const re of patterns) {
-      const match = html.match(re)
-      if (match) return parseInt(match[1]) / 100000
-    }
+  // Shopee: search for price in JSON data
+  if (!isAmazon) {
+    const m = html.match(/"price"\s*:\s*(\d+)/)
+    if (m) return parseInt(m[1]) / 100000
+    const m2 = html.match(/"price_before_discount"\s*:\s*(\d+)/)
+    if (m2) return parseInt(m2[1]) / 100000
   }
 
   return null
 }
-
-// ── Content script will also silently update prices ──
-// When the user visits a monitored product page organically,
-// the content script extracts the price and sends it here.
 
 export {}

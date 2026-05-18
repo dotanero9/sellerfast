@@ -23,6 +23,8 @@ module.exports = {
       'https://*.amazon.de/*',
       'https://*.shopee.com/*',
       'https://*.shopee.tw/*',
+      'https://*.shopee.sg/*',
+      'https://*.shopee.co.id/*',
       'http://43.128.117.46:3000/*',
       'https://*.sellerfast.com/*',
     ],
