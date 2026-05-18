@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:3000/api"
+const API_BASE = "http://10.3.0.15:3000/api"
 
 // Handle messages from content script & popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

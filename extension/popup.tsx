@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 
-const API_BASE = "http://localhost:3000/api"
+const API_BASE = "http://10.3.0.15:3000/api"
 const PRO_CHECKOUT = "https://sellerfast.lemonsqueezy.com/checkout"
 
 type Tab = "price" | "review" | "translate"

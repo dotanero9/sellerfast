@@ -23,7 +23,7 @@ module.exports = {
       'https://*.amazon.de/*',
       'https://*.shopee.com/*',
       'https://*.shopee.tw/*',
-      'http://localhost:3000/*',
+      'http://10.3.0.15:3000/*',
       'https://*.sellerfast.com/*',
     ],
     action: {
